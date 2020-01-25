@@ -4,8 +4,20 @@ import string
 
 _isChar = lambda s: isinstance(s, str) and len(s) == 1
 _DEBUG = False
-_dbgCategories = {"general": True, "match": True, "matchres": True}
+_dbgCategories = {"general": True, "match": True, "matchres": True, "error": True}
 dbg = lambda *args, **kwargs: print(f"[DBG:{args[0]}]", *args[1:], **kwargs) if _DEBUG and _dbgCategories.get(args[0], True) else None
+
+
+class ParserError(Exception):
+    pass
+
+
+class MatchError(ParserError):
+    pass
+
+
+class UndefinedElementError(ParserError):
+    pass
 
 
 class Match:
@@ -23,19 +35,21 @@ class StringMatch(Match):
 
 
 class ConcatenationMatch(Match):
-    def __init__(self, left, right):
-        assert isinstance(left, Match) and isinstance(right, Match)
-        self.left = left
-        self.right = right
+    def __init__(self, inners):
+        if not all([isinstance(e, Match) for e in inners]):
+            raise ValueError("All inner values must be instances of Match")
+        self.inners = inners
         dbg("matchres", self)
     
     def __str__(self):
-        return str(self.left) + str(self.right)
+        return "".join([str(e) for e in self.inners if e])
 
 
-def DisjunctionMatch(Match):
+class DisjunctionMatch(Match):
     def __init__(self, inner, id):
-        assert isinstance(inner, Match) and isinstance(id, int)
+        if not (isinstance(inner, Match) and isinstance(id, int)):
+            dbg("error", inner, id)
+            raise ValueError("Inner value must be an instance of Match, id must be int")
         self.inner = inner
         self.id = id
         dbg("matchres", self)
@@ -44,19 +58,10 @@ def DisjunctionMatch(Match):
         return str(self.inner)
 
 
-class RepetitionMatch(Match):
-    def __init__(self, inners):
-        assert all([isinstance(e, Match) for e in inners])
-        self.inners = inners
-        dbg("matchres", self)
-    
-    def __str__(self):
-        return "".join([str(e) for e in self.inners if e])
-
-
 class ElementMatch(Match):
     def __init__(self, inner, name="unnamed", handler=lambda self: None):
-        assert isinstance(inner, Match)
+        if not isinstance(inner, Match):
+            raise ValueError("Inner value must be an instance of Match")
         self.inner = inner
         self.name = name
         self.handler = handler
@@ -97,31 +102,32 @@ class Definition:
     def __add__(self, other):
         other = self._convert(other)
         if isinstance(other, Definition):
-            return ConcatenationDef(self, other)
+            return ConcatenationDef([self, other])
         return NotImplemented
     
     def __radd__(self, other):
         other = self._convert(other)
         if isinstance(other, Definition):
-            return ConcatenationDef(other, self)
+            return ConcatenationDef([other, self])
         return NotImplemented
     
     def __or__(self, other):
         other = self._convert(other)
         if isinstance(other, Definition):
-            return DisjunctionDef(self, other)
+            return DisjunctionDef([self, other])
         return NotImplemented
     
     def __ror__(self, other):
         other = self._convert(other)
         if isinstance(other, Definition):
-            return DisjunctionDef(other, self)
+            return DisjunctionDef([other, self])
         return NotImplemented
 
 
 class StringDef(Definition):
     def __init__(self, value):
-        assert isinstance(value, str)
+        if not isinstance(value, str):
+            raise ValueError("Value must be str")
         self.value = value
     
     def check(self, buf, index):
@@ -129,7 +135,8 @@ class StringDef(Definition):
     
     def match(self, buf, index):
         dbg("match", "strg", index, self)
-        assert self.check(buf, index)
+        if not self.check(buf, index):
+            raise MatchError()
         return StringMatch(self.value), index + len(self.value)
     
     def __str__(self):
@@ -138,7 +145,8 @@ class StringDef(Definition):
 
 class CharRangeDef(Definition):
     def __init__(self, left, right):
-        assert _isChar(left) and _isChar(right)
+        if not (_isChar(left) and _isChar(right)):
+            raise ValueError("Borders must be 1-long strings")
         self.left = left
         self.right = right
     
@@ -147,7 +155,8 @@ class CharRangeDef(Definition):
     
     def match(self, buf, index):
         dbg("match", "chrr", index, self)
-        assert self.check(buf, index)
+        if not self.check(buf, index):
+            raise MatchError()
         return StringMatch(buf[index]), index + 1
     
     def __str__(self):
@@ -157,7 +166,8 @@ class CharRangeDef(Definition):
 class CharSetDef(Definition):
     def __init__(self, value):
         value = set(value)
-        assert all([_isChar(e) for e in value])
+        if not all([_isChar(e) for e in value]):
+            raise ValueError("Value must be a set of 1-long strings")
         self.value = value
     
     def check(self, buf, index):
@@ -165,7 +175,8 @@ class CharSetDef(Definition):
     
     def match(self, buf, index):
         dbg("match", "chrs", index, self)
-        assert self.check(buf, index)
+        if not self.check(buf, index):
+            raise MatchError()
         return StringMatch(buf[index]), index + 1
     
     def __str__(self):
@@ -173,69 +184,70 @@ class CharSetDef(Definition):
 
 
 class ConcatenationDef(Definition):
-    def __init__(self, left, right):
-        assert isinstance(left, Definition) and isinstance(right, Definition)
-        self.left = left
-        self.right = right
+    def __init__(self, inners):
+        if not all([isinstance(e, Definition) for e in inners]):
+            raise ValueError("All inner values must be instances of Definition")
+        self.inners = inners
     
     def check(self, buf, index):
         try:
             self.match(buf, index)
             return True
-        except AssertionError:
+        except MatchError:
             return False
     
     def match(self, buf, index):
         dbg("match", "conc", index, self)
-        left, index = self.left.match(buf, index)
-        right, index = self.right.match(buf, index)
-        return ConcatenationMatch(left, right), index
+        innerMatches = []
+        for innerDef in self.inners:
+            innerMatch, index = innerDef.match(buf, index)
+            innerMatches.append(innerMatch)
+        return ConcatenationMatch(innerMatches), index
     
     def __str__(self):
-        left = str(self.left)
-        if isinstance(self.left, DisjunctionDef):
-            left = f"({left})"
-        right = str(self.right)
-        if isinstance(self.right, DisjunctionDef):
-            right = f"({right})"
-        return f"{left} + {right}"
+        return "(" + " + ".join(map(str, self.inners)) + ")"
 
 
 class DisjunctionDef(Definition):
-    def __init__(self, left, right):
-        assert isinstance(left, Definition) and isinstance(right, Definition)
-        self.left = left
-        self.right = right
+    def __init__(self, inners):
+        if not all([isinstance(e, Definition) for e in inners]):
+            raise ValueError("All inner values must be instances of Definition")
+        self.inners = inners
     
     def check(self, buf, index):
-        return self.left.check(buf, index) or self.right.check(buf, index)
+        return any([e.check(buf, index) for e in self.inners])
     
     def match(self, buf, index):
         dbg("match", "disj", index, self)
-        try:
-            return DisjunctionMatch(self.left.match(buf, index), 0)
-        except AssertionError:
-            return DisjunctionMatch(self.right.match(buf, index), 1)
+        for i, inner in enumerate(self.inners):
+            try:
+                innerMatch, index = inner.match(buf, index)
+                return DisjunctionMatch(innerMatch, i), index
+            except MatchError:
+                pass
+        raise MatchError()
     
     def __str__(self):
-        return f"{self.left} | {self.right}"
+        return "(" + " | ".join(map(str, self.inners)) + ")"
 
 
 class RepetitionDef(Definition):
     def __init__(self, inner, range):
-        assert isinstance(inner, Definition)
+        if not isinstance(inner, Definition):
+            raise ValueError("Inner value must be an instance of Definition")
         self.inner = inner
         if isinstance(range, int):
             range = (range, range + 1)
-        assert isinstance(range, tuple) and len(range) == 2 \
-                                   and 0 <= range[0] and -1 <= range[1]
+        if not (isinstance(range, tuple) and len(range) == 2 \
+                    and 0 <= range[0] and -1 <= range[1]):
+            raise ValueError("Repetition count must be int or tuple of two ints")
         self.range = range
     
     def check(self, buf, index):
         try:
             self.match(buf, index)
             return True
-        except AssertionError:
+        except MatchError:
             return False
     
     def match(self, buf, index):
@@ -253,15 +265,12 @@ class RepetitionDef(Definition):
                 inner, index = self.inner.match(buf, index)
                 inners.append(inner)
                 i += 1
-            except AssertionError:
+            except MatchError:
                 break
-        return RepetitionMatch(inners), index
+        return ConcatenationMatch(inners), index
     
     def __str__(self):
-        inner = str(self.inner)
-        if isinstance(self.inner, (DisjunctionDef, ConcatenationDef, RepetitionDef)):
-            inner = f"({inner})"
-        return f"{inner} * {self.range}"
+        return f"{self.inner} * {self.range}"
 
 
 class ElementDef(Definition):
@@ -271,7 +280,8 @@ class ElementDef(Definition):
         self.handler = handler
     
     def define(self, definition):
-        assert isinstance(definition, Definition)
+        if not isinstance(definition, Definition):
+            raise ValueError("Definition must be an instance of Definition")
         self.definition = definition
     
     def isDefined(self):
@@ -282,7 +292,8 @@ class ElementDef(Definition):
     
     def match(self, buf, index):
         dbg("match", "elem", index, self)
-        assert self.isDefined()
+        if not self.isDefined():
+            raise UndefinedElementError()
         inner, index = self.definition.match(buf, index)
         return ElementMatch(inner, name=self.name, handler=self.handler), index
     
@@ -311,31 +322,33 @@ operatorLookup = {"+": operator.add, "-": operator.sub, "/": operator.truediv, "
 
 
 def numberHandler(self):
-    integer = str(self.inner.left)
-    fractional = str(self.inner.right)
+    integer = str(self.inner.inners[0])
+    fractional = str(self.inner.inners[1])
     res = int(integer)
     if fractional:
         res += float("0" + fractional)
     return res
 
 def factorHandler(self):
-    if isinstance(self.inner, ConcatenationMatch):
-        if isinstance(self.inner.right, StringMatch) and self.inner.right.evaluate() == ")":
-            return self.inner.left.right.customEvaluate()
-        return -self.inner.right.customEvaluate()
-    return self.inner.customEvaluate()
+    variant = self.inner.id
+    if variant == 0:
+        return self.inner.inner.evaluate()
+    elif variant == 1:
+        return self.inner.inner.inners[0].inners[1].evaluate()
+    elif variant == 2:
+        return -self.inner.inner.inners[1].evaluate()
 
 def termHandler(self):
-    res = self.inner.left.customEvaluate()
-    for factor in self.inner.right.inners:
-        op, factor = factor.left.evaluate(), factor.right.customEvaluate()
+    res = self.inner.inners[0].evaluate()
+    for factor in self.inner.inners[1].inners:
+        op, factor = str(factor.inners[0]), factor.inners[1].evaluate()
         res = operatorLookup[op](res, factor)
     return res
 
 def exprHandler(self):
-    res = self.inner.left.customEvaluate()
-    for term in self.inner.right.inners:
-        op, term = term.left.evaluate(), term.right.customEvaluate()
+    res = self.inner.inners[0].evaluate()
+    for term in self.inner.inners[1].inners:
+        op, term = str(term.inners[0]), term.inners[1].evaluate()
         res = operatorLookup[op](res, term)
     return res
 
@@ -347,7 +360,7 @@ number = ElementDef("number", numberHandler)
 #whitespace = ElementDef("whitespace")
 expr.define(term + (CharSetDef("+-") + term) * (0, -1))
 term.define(factor + (CharSetDef("*/") + factor) * (0, -1))
-factor.define(number | "(" + expr + ")" | "-" + factor)
+factor.define(DisjunctionDef([number, "(" + expr + ")", "-" + factor]))
 number.define(digits * (1, -1) + ("." + digits * (0, -1)) * (0, 1))
 
 print(expr.expand())
