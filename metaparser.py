@@ -4,7 +4,7 @@ import string
 
 _isChar = lambda s: isinstance(s, str) and len(s) == 1
 _DEBUG = False
-_dbgCategories = {"general": True, "match": True, "matchres": True, "error": True}
+_dbgCategories = {"general": True, "match": True, "matchres": True, "error": True, "mptest": True}
 dbg = lambda *args, **kwargs: print(f"[DBG:{args[0]}]", *args[1:], **kwargs) if _DEBUG and _dbgCategories.get(args[0], True) else None
 
 
@@ -59,7 +59,7 @@ class DisjunctionMatch(Match):
 
 
 class ElementMatch(Match):
-    def __init__(self, inner, name="unnamed", handler=lambda self: None):
+    def __init__(self, inner, name="unnamed", handler=lambda inner: None):
         if not isinstance(inner, Match):
             raise ValueError("Inner value must be an instance of Match")
         self.inner = inner
@@ -68,7 +68,7 @@ class ElementMatch(Match):
         dbg("matchres", self)
     
     def evaluate(self):
-        return self.handler(self)
+        return self.handler(self.inner)
     
     def __str__(self):
         return str(self.inner)
@@ -90,11 +90,15 @@ class Definition:
         return value
     
     def __mul__(self, other):
+        if isinstance(other, int):
+            other = (other, other)
         if isinstance(other, tuple) and len(other) == 2:
             return RepetitionDef(self, other)
         return NotImplemented
     
     def __rmul__(self, other):
+        if isinstance(other, int):
+            other = (other, other)
         if isinstance(other, tuple) and len(other) == 2:
             return RepetitionDef(self, other)
         return NotImplemented
@@ -144,14 +148,15 @@ class StringDef(Definition):
 
 
 class CharRangeDef(Definition):
-    def __init__(self, left, right):
+    def __init__(self, left, right, inverted=False):
         if not (_isChar(left) and _isChar(right)):
             raise ValueError("Borders must be 1-long strings")
         self.left = left
         self.right = right
+        self.inverted = inverted
     
     def check(self, buf, index):
-        return super().check(buf, index) and self.left <= buf[index] <= self.right
+        return super().check(buf, index) and ((self.left <= buf[index] <= self.right) ^ self.inverted)
     
     def match(self, buf, index):
         dbg("match", "chrr", index, self)
@@ -159,25 +164,32 @@ class CharRangeDef(Definition):
             raise MatchError()
         return StringMatch(buf[index]), index + 1
     
+    def __invert__(self):
+        return CharRangeDef(self.left, self.right, inverted=(not self.inverted))
+    
     def __str__(self):
         return f"[{repr(self.left)}..{repr(self.right)}]"
 
 
 class CharSetDef(Definition):
-    def __init__(self, value):
+    def __init__(self, value, inverted=False):
         value = set(value)
         if not all([_isChar(e) for e in value]):
             raise ValueError("Value must be a set of 1-long strings")
         self.value = value
+        self.inverted = inverted
     
     def check(self, buf, index):
-        return super().check(buf, index) and buf[index] in self.value
+        return super().check(buf, index) and ((buf[index] in self.value) ^ self.inverted)
     
     def match(self, buf, index):
         dbg("match", "chrs", index, self)
         if not self.check(buf, index):
             raise MatchError()
         return StringMatch(buf[index]), index + 1
+    
+    def __invert__(self):
+        return CharSetDef(self.value, inverted=(not self.inverted))
     
     def __str__(self):
         return repr(self.value)
@@ -274,7 +286,7 @@ class RepetitionDef(Definition):
 
 
 class ElementDef(Definition):
-    def __init__(self, name="unnamed", handler=lambda self: None):
+    def __init__(self, name="unnamed", handler=lambda inner: None):
         self.name = name
         self.definition = None
         self.handler = handler
@@ -305,73 +317,216 @@ class ElementDef(Definition):
 
 
 digits = CharRangeDef("0", "9")
+hexdigits = CharSetDef("0123456789abcdef")
 alphaLower = CharRangeDef("a", "z")
 alphaUpper = CharRangeDef("A", "Z")
+alpha = alphaLower | alphaUpper
 
 
-#test = ElementDef("test")
-#test.define(digits * (1, -1))
-#toParse = "123"
-#dbg("buf =", repr(toParse))
-#match, index = test.match(toParse, 0)
-#print(match, index)
+class AbstractParser:
+    bufferType = str
+    mainElement = None
+    defined = False
+    
+    def __init__(self, data=None):
+        if not self.defined:
+            self.mainElement = self.define()
+            self.defined = True
+        self.clear()
+        if data is not None:
+            self.feed(data)
+    
+    @classmethod
+    def define(cls):
+        pass
+    
+    def feed(self, data):
+        self.buf += data
+    
+    def clear(self):
+        self.buf = self.bufferType()
+    
+    def parse(self):
+        assert self.defined
+        match, index = self.mainElement.match(self.buf, 0)
+        dbg("general", match, index)
+        assert index == len(self.buf)
+        return match.evaluate()
 
 
-import operator
-operatorLookup = {"+": operator.add, "-": operator.sub, "/": operator.truediv, "*": operator.mul}
+class MetaParserHandlers:
+    def handle_defs(self, val):
+        for ctrl in val.inners[0]:
+            ctrl.evaluate()
+        for line in val.inners[1]:
+            line.inners[0].inner.evaluate()
+        pass
+    
+    def handle_defn(self, val):
+        pass
+    
+    def handle_disj(self, val):
+        pass
+    
+    def handle_conc(self, val):
+        pass
+    
+    def handle_rept(self, val):
+        pass
+    
+    def handle_range(self, val):
+        pass
+    
+    def handle_simple(self, val):
+        pass
+    
+    def handle_intg(self, val):
+        pass
+    
+    def handle_strg(self, val):
+        pass
+    
+    def handle_char(self, val):
+        pass
+    
+    def handle_chrs(self, val):
+        pass
+    
+    def handle_chrr(self, val):
+        pass
+    
+    def handle_elem(self, val):
+        pass
+    
+    def handle_ctrl(self, val):
+        pass
+    
+    def handle_qchar(self, val):
+        pass
+    
+    def handle_eseq(self, val):
+        pass
 
 
-def numberHandler(self):
-    integer = str(self.inner.inners[0])
-    fractional = str(self.inner.inners[1])
-    res = int(integer)
-    if fractional:
-        res += float("0" + fractional)
-    return res
+class MetaParser(AbstractParser):
+    @classmethod
+    def define(cls):
+        handlers = MetaParserHandlers()
+        
+        defs = ElementDef("defs", MeraParserHandlers.handle_defs)
+        defn = ElementDef("defn", MeraParserHandlers.handle_defn)
+        disj = ElementDef("disj", MeraParserHandlers.handle_disj)
+        conc = ElementDef("conc", MeraParserHandlers.handle_conc)
+        rept = ElementDef("rept", MeraParserHandlers.handle_rept)
+        range = ElementDef("range", MeraParserHandlers.handle_range)
+        simple = ElementDef("simple", MeraParserHandlers.handle_simple)
+        intg = ElementDef("intg", MeraParserHandlers.handle_intg)
+        strg = ElementDef("strg", MeraParserHandlers.handle_strg)
+        char = ElementDef("char", MeraParserHandlers.handle_char)
+        chrs = ElementDef("chrs", MeraParserHandlers.handle_chrs)
+        chrr = ElementDef("chrr", MeraParserHandlers.handle_chrr)
+        elem = ElementDef("elem", MeraParserHandlers.handle_elem)
+        cmnt = ElementDef("cmnt")
+        ctrl = ElementDef("ctrl", MeraParserHandlers.handle_ctrl)
+        dqchr = ElementDef("dqchar", MeraParserHandlers.handle_qchar)
+        sqchr = ElementDef("sqchar", MeraParserHandlers.handle_qchar)
+        eseq = ElementDef("eseq", MeraParserHandlers.handle_eseq)
+        blank = ElementDef("blank")
+        
+        blank.define(CharSetDef(" \t\r") * (0, -1))
+        defs.define(ctrl * (0, -1) + ((defn | blank) + (cmnt | "\n")) * (0, -1))
+        defn.define(elem + "::=" + disj)
+        disj.define(conc + ("|" + conc) * (0, -1))
+        conc.define(rept + ("+" + rept) * (0, -1))
+        rept.define(simple + ("*" + (intg | range)) * (0, 1) + blank)  # some more blanks
+        range.define(ConcatenationDef([StringDef("("), intg, StringDef(","), (intg | "inf"), StringDef(")")]))
+        simple.define(DisjunctionDef([strg, chrs, chrr, elem, ConcatenationDef([blank, StringDef("("), disj + StringDef(")") + blank])]))
+        cmnt.define(ConcatenationDef([blank, StringDef("#"), (~CharSetDef("\n")) * (0, -1), StringDef("\n")]))
+        ctrl.define(ConcatenationDef([blank, StringDef("#:"), alphaLower * (0, -1), (" " + (~CharSetDef("\n")) * (0, -1)) * (0, 1), StringDef("\n")]))
+        strg.define(ConcatenationDef([blank, ConcatenationDef([StringDef("\""), dqchr * (0, -1), StringDef("\"")]) | ConcatenationDef([StringDef("'"), sqchr * (0, -1), StringDef("'")]), blank]))
+        char.define(ConcatenationDef([blank, ConcatenationDef([StringDef("\""), dqchr, StringDef("\"")]) | ConcatenationDef([StringDef("'"), sqchr, StringDef("'")]), blank]))
+        intg.define(ConcatenationDef([blank, digits * (1, -1), blank]))
+        chrr.define(ConcatenationDef([blank, StringDef("["), char, StringDef("-"), char, StringDef("]"), blank]))
+        chrs.define(ConcatenationDef([blank, StringDef("{"), strg, StringDef("}"), blank]))
+        elem.define(ConcatenationDef([blank, (alpha | "_") * (1, -1), blank]))
+        dqchr.define((~CharSetDef("\\\"\n")) | eseq)
+        sqchr.define((~CharSetDef("\\\'\n")) | eseq)
+        eseq.define("\\" + (CharSetDef("\"'rnt") | "x" + hexdigits * 2 | "u" + hexdigits * 4))
+        
+        return defs
 
-def factorHandler(self):
-    variant = self.inner.id
-    if variant == 0:
-        return self.inner.inner.evaluate()
-    elif variant == 1:
-        return self.inner.inner.inners[0].inners[1].evaluate()
-    elif variant == 2:
-        return -self.inner.inner.inners[1].evaluate()
 
-def termHandler(self):
-    res = self.inner.inners[0].evaluate()
-    for factor in self.inner.inners[1].inners:
-        op, factor = str(factor.inners[0]), factor.inners[1].evaluate()
-        res = operatorLookup[op](res, factor)
-    return res
+toParse = r"""#:autoconfig
+main ::= a + "\n" + b # Comment one
+a ::= "abc" | "123"
+   # Comment 2
+b ::= ("def" | "456") * 30
+"""
 
-def exprHandler(self):
-    res = self.inner.inners[0].evaluate()
-    for term in self.inner.inners[1].inners:
-        op, term = str(term.inners[0]), term.inners[1].evaluate()
-        res = operatorLookup[op](res, term)
-    return res
+mp = MetaParser()
+mp.feed(toParse)
+print(mp.parse())
 
 
-expr = ElementDef("expr", exprHandler)
-term = ElementDef("term", termHandler)
-factor = ElementDef("factor", factorHandler)
-number = ElementDef("number", numberHandler)
-#whitespace = ElementDef("whitespace")
-expr.define(term + (CharSetDef("+-") + term) * (0, -1))
-term.define(factor + (CharSetDef("*/") + factor) * (0, -1))
-factor.define(DisjunctionDef([number, "(" + expr + ")", "-" + factor]))
-number.define(digits * (1, -1) + ("." + digits * (0, -1)) * (0, 1))
 
-print(expr.expand())
-print(term.expand())
-print(factor.expand())
-print(number.expand())
+
+#import operator
+#operatorLookup = {"+": operator.add, "-": operator.sub, "/": operator.truediv, "*": operator.mul}
+
+#def numberHandler(self):
+#    integer = str(self.inner.inners[0])
+#    fractional = str(self.inner.inners[1])
+#    res = int(integer)
+#    if fractional:
+#        res += float("0" + fractional)
+#    return res
+
+#def factorHandler(self):
+#    variant = self.inner.id
+#    if variant == 0:
+#        return self.inner.inner.evaluate()
+#    elif variant == 1:
+#        return self.inner.inner.inners[0].inners[1].evaluate()
+#    elif variant == 2:
+#        return -self.inner.inner.inners[1].evaluate()
+
+#def termHandler(self):
+#    res = self.inner.inners[0].evaluate()
+#    for factor in self.inner.inners[1].inners:
+#        op, factor = str(factor.inners[0]), factor.inners[1].evaluate()
+#        res = operatorLookup[op](res, factor)
+#    return res
+
+#def exprHandler(self):
+#    res = self.inner.inners[0].evaluate()
+#    for term in self.inner.inners[1].inners:
+#        op, term = str(term.inners[0]), term.inners[1].evaluate()
+#        res = operatorLookup[op](res, term)
+#    return res
+
+
+#class MathExprParser(AbstractParser):
+#    @classmethod
+#    def define(cls):
+#        expr = ElementDef("expr", exprHandler)
+#        term = ElementDef("term", termHandler)
+#        factor = ElementDef("factor", factorHandler)
+#        number = ElementDef("number", numberHandler)
+#        #whitespace = ElementDef("whitespace")
+#        expr.define(term + (CharSetDef("+-") + term) * (0, -1))
+#        term.define(factor + (CharSetDef("*/") + factor) * (0, -1))
+#        factor.define(DisjunctionDef([number, "(" + expr + ")", "-" + factor]))
+#        number.define(digits * (1, -1) + ("." + digits * (0, -1)) * (0, 1))
+#        return expr
+
+#print(expr.expand())
+#print(term.expand())
+#print(factor.expand())
+#print(number.expand())
 #print(whitespace.expand())
 
-toParse = "123+(17---456*-789)*5"
-dbg("general", "buf =", repr(toParse))
-match, index = expr.match(toParse, 0)
-print()
-print(match.evaluate())
-print(eval(toParse))
+#toParse = "123+(17---456*-789)*5"
+#dbg("general", "buf =", repr(toParse))
+#mep = MathExprParser(toParse)
+#print(mep.parse())
+#print(eval(toParse))
