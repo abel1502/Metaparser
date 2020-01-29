@@ -3,8 +3,8 @@ import string
 
 
 _isChar = lambda s: isinstance(s, str) and len(s) == 1
-_DEBUG = False
-_dbgCategories = {"general": True, "match": True, "matchres": True, "error": True, "mptest": True}
+_DEBUG = True
+_dbgCategories = {"general": True, "match": False, "matchres": False, "error": True, "mptest": True, "ctrl": True}
 dbg = lambda *args, **kwargs: print(f"[DBG:{args[0]}]", *args[1:], **kwargs) if _DEBUG and _dbgCategories.get(args[0], True) else None
 
 
@@ -355,57 +355,104 @@ class AbstractParser:
 
 
 class MetaParserHandlers:
+    def __init__(self):
+        self.elements = {}
+        self.metadata = {"name": "CustomParser", "main": None, "handlersFile": None, "handlersClass": None}
+    
     def handle_defs(self, val):
-        for ctrl in val.inners[0]:
+        for ctrl in val.inners[0].inners:
             ctrl.evaluate()
-        for line in val.inners[1]:
+        for line in val.inners[1].inners:
             line.inners[0].inner.evaluate()
-        pass
+        parser = type(self.metadata["name"], (AbstractParser,), {"mainElement": self.elements[self.metadata["main"]], "defined": True})
+        return parser
     
     def handle_defn(self, val):
-        pass
+        self.elements[val.inners[0].evaluate()].define(val.inners[2].evaluate())
     
     def handle_disj(self, val):
-        pass
+        concs = [val.inners[0].evaluate()]
+        for e in val.inners[1].inners:
+            concs.append(e.inners[1].evaluate())
+        return DisjunctionDef(concs)
     
     def handle_conc(self, val):
-        pass
+        repts = [val.inners[0].evaluate()]
+        for e in val.inners[1].inners:
+            repts.append(e.inners[1].evaluate())
+        return ConcatenationDef(repts)
     
     def handle_rept(self, val):
-        pass
+        res = val.inners[0].evaluate()
+        if len(val.inners[1].inners) == 1:
+            res *= val.inners[1].inners[0].inners[1].inner.evaluate()
+        return res
     
     def handle_range(self, val):
-        pass
+        start = val.inners[2].evaluate()
+        end = val.inners[4]
+        if end.id == 0:
+            end = end.inner.evaluate()
+        else:
+            end = -1
+        return (start, end)
     
     def handle_simple(self, val):
-        pass
+        if val.id == 0:
+            return StringDef(val.inner.evaluate())
+        if val.id == 3:
+            return self.elements[val.inner.evaluate()]
+        if val.id == 4:
+            return val.inner.inners[2].evaluate()
+        return val.inner.evaluate()
     
     def handle_intg(self, val):
-        pass
+        return int(str(val.inners[1]))
     
     def handle_strg(self, val):
-        pass
+        val = val.inners[1].inner.inners[1]
+        return ''.join([e.evaluate() for e in val.inners])
     
     def handle_char(self, val):
-        pass
+        return val.inners[1].inner.inners[1].evaluate()
     
     def handle_chrs(self, val):
-        pass
+        return CharSetDef(val.inners[2].evaluate())
     
     def handle_chrr(self, val):
-        pass
+        return CharRangeDef(val.inners[2].evaluate(), val.inners[4].evaluate())
     
     def handle_elem(self, val):
-        pass
+        elemName = str(val.inners[1])
+        if elemName not in self.elements:
+            self.elements[elemName] = ElementDef(elemName)
+        if self.metadata["main"] is None:
+            self.metadata["main"] = elemName
+        return elemName
     
     def handle_ctrl(self, val):
-        pass
+        val.inners[2].evaluate()
+    
+    def handle_mdata(self, val):
+        cmd = str(val.inner.inners[0])
+        args = val.inner.inners[2]
+        dbg("ctrl", cmd, args)
+        if cmd == "name":
+            self.metadata["name"] = args.evaluate()
+        elif cmd == "main":
+            args.evaluate()  # Writes itself to main automatically
+        elif cmd == "handlers":
+            self.metadata["handlersFile"] = args.inners[0].evaluate()
+            if len(args.inners[1].inners) == 1:
+                self.metadata["handlersClass"] = args.inners[1].inners[0].evaluate()
     
     def handle_qchar(self, val):
-        pass
+        if val.id == 0:
+            return str(val.inner)
+        return val.inner.evaluate()
     
     def handle_eseq(self, val):
-        pass
+        return bytes(str(val), "utf-8").decode("unicode_escape")
 
 
 class MetaParser(AbstractParser):
@@ -413,59 +460,71 @@ class MetaParser(AbstractParser):
     def define(cls):
         handlers = MetaParserHandlers()
         
-        defs = ElementDef("defs", MeraParserHandlers.handle_defs)
-        defn = ElementDef("defn", MeraParserHandlers.handle_defn)
-        disj = ElementDef("disj", MeraParserHandlers.handle_disj)
-        conc = ElementDef("conc", MeraParserHandlers.handle_conc)
-        rept = ElementDef("rept", MeraParserHandlers.handle_rept)
-        range = ElementDef("range", MeraParserHandlers.handle_range)
-        simple = ElementDef("simple", MeraParserHandlers.handle_simple)
-        intg = ElementDef("intg", MeraParserHandlers.handle_intg)
-        strg = ElementDef("strg", MeraParserHandlers.handle_strg)
-        char = ElementDef("char", MeraParserHandlers.handle_char)
-        chrs = ElementDef("chrs", MeraParserHandlers.handle_chrs)
-        chrr = ElementDef("chrr", MeraParserHandlers.handle_chrr)
-        elem = ElementDef("elem", MeraParserHandlers.handle_elem)
+        defs = ElementDef("defs", handlers.handle_defs)
+        defn = ElementDef("defn", handlers.handle_defn)
+        disj = ElementDef("disj", handlers.handle_disj)
+        conc = ElementDef("conc", handlers.handle_conc)
+        rept = ElementDef("rept", handlers.handle_rept)
+        range = ElementDef("range", handlers.handle_range)
+        simple = ElementDef("simple", handlers.handle_simple)
+        intg = ElementDef("intg", handlers.handle_intg)
+        strg = ElementDef("strg", handlers.handle_strg)
+        char = ElementDef("char", handlers.handle_char)
+        chrs = ElementDef("chrs", handlers.handle_chrs)
+        chrr = ElementDef("chrr", handlers.handle_chrr)
+        elem = ElementDef("elem", handlers.handle_elem)
         cmnt = ElementDef("cmnt")
-        ctrl = ElementDef("ctrl", MeraParserHandlers.handle_ctrl)
-        dqchr = ElementDef("dqchar", MeraParserHandlers.handle_qchar)
-        sqchr = ElementDef("sqchar", MeraParserHandlers.handle_qchar)
-        eseq = ElementDef("eseq", MeraParserHandlers.handle_eseq)
+        ctrl = ElementDef("ctrl", handlers.handle_ctrl)
+        mdata = ElementDef("mdata", handlers.handle_mdata)
+        dqchr = ElementDef("dqchar", handlers.handle_qchar)
+        sqchr = ElementDef("sqchar", handlers.handle_qchar)
+        eseq = ElementDef("eseq", handlers.handle_eseq)
         blank = ElementDef("blank")
+        space = ElementDef("space")
         
-        blank.define(CharSetDef(" \t\r") * (0, -1))
+        blank.define(CharSetDef(" \t") * (0, -1))
+        space.define(CharSetDef(" \t") * (1, -1))
         defs.define(ctrl * (0, -1) + ((defn | blank) + (cmnt | "\n")) * (0, -1))
-        defn.define(elem + "::=" + disj)
+        defn.define(ConcatenationDef([elem, StringDef("::="), disj]))
         disj.define(conc + ("|" + conc) * (0, -1))
         conc.define(rept + ("+" + rept) * (0, -1))
-        rept.define(simple + ("*" + (intg | range)) * (0, 1) + blank)  # some more blanks
-        range.define(ConcatenationDef([StringDef("("), intg, StringDef(","), (intg | "inf"), StringDef(")")]))
-        simple.define(DisjunctionDef([strg, chrs, chrr, elem, ConcatenationDef([blank, StringDef("("), disj + StringDef(")") + blank])]))
+        rept.define(simple + ("*" + (intg | range)) * (0, 1))
+        range.define(ConcatenationDef([blank, StringDef("("), intg, StringDef(","), (intg | ConcatenationDef([blank, StringDef("inf"), blank])), StringDef(")"), blank]))
+        simple.define(DisjunctionDef([strg, chrs, chrr, elem, ConcatenationDef([blank, StringDef("("), disj, StringDef(")"), blank])]))
         cmnt.define(ConcatenationDef([blank, StringDef("#"), (~CharSetDef("\n")) * (0, -1), StringDef("\n")]))
-        ctrl.define(ConcatenationDef([blank, StringDef("#:"), alphaLower * (0, -1), (" " + (~CharSetDef("\n")) * (0, -1)) * (0, 1), StringDef("\n")]))
+        ctrl.define(ConcatenationDef([blank, StringDef("#:"), mdata, StringDef("\n")]))
+        _ctrlComments = (("name", strg), 
+                                         ("main", elem), 
+                                         ("handlers", strg + (space + strg) * (0, 1))
+                                         # Todo: use; ...
+                                         )
+        mdata.define(DisjunctionDef([ConcatenationDef([StringDef(name), space, args]) for name, args in _ctrlComments]))
         strg.define(ConcatenationDef([blank, ConcatenationDef([StringDef("\""), dqchr * (0, -1), StringDef("\"")]) | ConcatenationDef([StringDef("'"), sqchr * (0, -1), StringDef("'")]), blank]))
         char.define(ConcatenationDef([blank, ConcatenationDef([StringDef("\""), dqchr, StringDef("\"")]) | ConcatenationDef([StringDef("'"), sqchr, StringDef("'")]), blank]))
         intg.define(ConcatenationDef([blank, digits * (1, -1), blank]))
         chrr.define(ConcatenationDef([blank, StringDef("["), char, StringDef("-"), char, StringDef("]"), blank]))
         chrs.define(ConcatenationDef([blank, StringDef("{"), strg, StringDef("}"), blank]))
-        elem.define(ConcatenationDef([blank, (alpha | "_") * (1, -1), blank]))
+        elem.define(ConcatenationDef([blank, (alpha | "_") + DisjunctionDef([alpha, digits, StringDef("_")])* (0, -1), blank]))
         dqchr.define((~CharSetDef("\\\"\n")) | eseq)
         sqchr.define((~CharSetDef("\\\'\n")) | eseq)
-        eseq.define("\\" + (CharSetDef("\"'rnt") | "x" + hexdigits * 2 | "u" + hexdigits * 4))
+        eseq.define("\\" + (CharSetDef("\\\"'rnt") | "x" + hexdigits * 2 | "u" + hexdigits * 4))
         
         return defs
 
 
-toParse = r"""#:autoconfig
-main ::= a + "\n" + b # Comment one
+toParse = \
+r"""#:name "TestParser"
+#:main main
+main ::= a + "\n" + b * (0, 7) # Comment one
 a ::= "abc" | "123"
    # Comment 2
-b ::= ("def" | "456") * 30
+b ::= ("def" | "456") * 3
 """
 
 mp = MetaParser()
 mp.feed(toParse)
-print(mp.parse())
+parser = mp.parse()
+print(parser("abc\ndef456def").parse())
 
 
 
