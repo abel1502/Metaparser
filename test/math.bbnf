@@ -1,0 +1,9 @@
+#:name math
+#:main expr
+##:use std
+
+expr ::=term + ({"+-"} + term) * (0, inf)
+term ::= factor     + ({"*/"} + factor) * (0, inf)
+# TODO: implement actual numbers
+factor ::= number | "-" + factor | "(" + expr + ")"
+number ::= ["0"-"9"] * (1, inf)

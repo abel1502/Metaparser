@@ -1,9 +1,11 @@
 import string
+import importlib.util
+import os, pathlib
 #import sys; sys.setrecursionlimit(10 ** 5)
 
 
 _isChar = lambda s: isinstance(s, str) and len(s) == 1
-_DEBUG = True
+_DEBUG = False
 _dbgCategories = {"general": True, "match": False, "matchres": False, "error": True, "mptest": True, "ctrl": True}
 dbg = lambda *args, **kwargs: print(f"[DBG:{args[0]}]", *args[1:], **kwargs) if _DEBUG and _dbgCategories.get(args[0], True) else None
 
@@ -328,13 +330,11 @@ class AbstractParser:
     mainElement = None
     defined = False
     
-    def __init__(self, data=None):
+    def __init__(self):
         if not self.defined:
             self.mainElement = self.define()
             self.defined = True
         self.clear()
-        if data is not None:
-            self.feed(data)
     
     @classmethod
     def define(cls):
@@ -357,13 +357,22 @@ class AbstractParser:
 class MetaParserHandlers:
     def __init__(self):
         self.elements = {}
-        self.metadata = {"name": "CustomParser", "main": None, "handlersFile": None, "handlersClass": None}
+        self.handlers = None
+        self.metadata = {"name": None, "main": None}
     
     def handle_defs(self, val):
         for ctrl in val.inners[0].inners:
-            ctrl.evaluate()
+            if ctrl.id == 0:
+                ctrl.inner.evaluate()
         for line in val.inners[1].inners:
             line.inners[0].inner.evaluate()
+        if self.handlers is not None:
+            for name in self.elements:
+                elem = self.elements[name]
+                if hasattr(self.handlers, f"handle_{name}"):
+                    elem.handler = getattr(self.handlers, f"handle_{name}")
+        if self.metadata["name"] is None:
+            self.metadata["name"] = "CustomParser"
         parser = type(self.metadata["name"], (AbstractParser,), {"mainElement": self.elements[self.metadata["main"]], "defined": True})
         return parser
     
@@ -374,12 +383,16 @@ class MetaParserHandlers:
         concs = [val.inners[0].evaluate()]
         for e in val.inners[1].inners:
             concs.append(e.inners[1].evaluate())
+        if len(concs) == 1:
+            return concs[0]
         return DisjunctionDef(concs)
     
     def handle_conc(self, val):
         repts = [val.inners[0].evaluate()]
         for e in val.inners[1].inners:
             repts.append(e.inners[1].evaluate())
+        if len(repts) == 1:
+            return repts[0]
         return ConcatenationDef(repts)
     
     def handle_rept(self, val):
@@ -438,13 +451,11 @@ class MetaParserHandlers:
         args = val.inner.inners[2]
         dbg("ctrl", cmd, args)
         if cmd == "name":
+            assert self.metadata["name"] is None
             self.metadata["name"] = args.evaluate()
         elif cmd == "main":
+            assert self.metadata["main"] is None
             args.evaluate()  # Writes itself to main automatically
-        elif cmd == "handlers":
-            self.metadata["handlersFile"] = args.inners[0].evaluate()
-            if len(args.inners[1].inners) == 1:
-                self.metadata["handlersClass"] = args.inners[1].inners[0].evaluate()
     
     def handle_qchar(self, val):
         if val.id == 0:
@@ -456,9 +467,21 @@ class MetaParserHandlers:
 
 
 class MetaParser(AbstractParser):
+    def feed(self, data, handlers=None, handlersClass=None):
+        super().feed(data)
+        if handlers is not None:
+            spec = importlib.util.spec_from_file_location("module.name", handlers)
+            handlers = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(handlers)
+            if handlersClass is not None:
+                handlers = getattr(handlers, handlersClass)()
+            self._handlers.handlers = handlers
+            
+    
     @classmethod
     def define(cls):
         handlers = MetaParserHandlers()
+        cls._handlers = handlers
         
         defs = ElementDef("defs", handlers.handle_defs)
         defn = ElementDef("defn", handlers.handle_defn)
@@ -484,7 +507,7 @@ class MetaParser(AbstractParser):
         
         blank.define(CharSetDef(" \t") * (0, -1))
         space.define(CharSetDef(" \t") * (1, -1))
-        defs.define(ctrl * (0, -1) + ((defn | blank) + (cmnt | "\n")) * (0, -1))
+        defs.define((ctrl | cmnt) * (0, -1) + ((defn | blank) + (cmnt | "\n")) * (0, -1))
         defn.define(ConcatenationDef([elem, StringDef("::="), disj]))
         disj.define(conc + ("|" + conc) * (0, -1))
         conc.define(rept + ("+" + rept) * (0, -1))
@@ -494,8 +517,7 @@ class MetaParser(AbstractParser):
         cmnt.define(ConcatenationDef([blank, StringDef("#"), (~CharSetDef("\n")) * (0, -1), StringDef("\n")]))
         ctrl.define(ConcatenationDef([blank, StringDef("#:"), mdata, StringDef("\n")]))
         _ctrlComments = (("name", strg), 
-                                         ("main", elem), 
-                                         ("handlers", strg + (space + strg) * (0, 1))
+                                         ("main", elem)
                                          # Todo: use; ...
                                          )
         mdata.define(DisjunctionDef([ConcatenationDef([StringDef(name), space, args]) for name, args in _ctrlComments]))
@@ -512,19 +534,16 @@ class MetaParser(AbstractParser):
         return defs
 
 
-toParse = \
-r"""#:name "TestParser"
-#:main main
-main ::= a + "\n" + b * (0, 7) # Comment one
-a ::= "abc" | "123"
-   # Comment 2
-b ::= ("def" | "456") * 3
-"""
+targetFile = "./test/math.bbnf"
+targetHandlers = "./test/math.py"
+targetClass = None
 
 mp = MetaParser()
-mp.feed(toParse)
-parser = mp.parse()
-print(parser("abc\ndef456def").parse())
+mp.feed(open(targetFile, "r").read(), handlers=targetHandlers, handlersClass=targetClass)
+Parser = mp.parse()
+p = Parser()
+p.feed("1+2*(3-14)--17")
+print(p.parse())
 
 
 

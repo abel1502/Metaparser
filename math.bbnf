@@ -1,6 +1,0 @@
-#:elements expr term factor number
-#:main expr
-#:use std whitespaces digits
-#:code math.py
-
-expr::=...
